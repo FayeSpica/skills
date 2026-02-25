@@ -2,8 +2,11 @@
 """
 SOR (Standard OTDR Record) File Parser
 
-Parses binary SOR files (Bellcore SR-4731 / Telcordia GR-196) from OTDR instruments.
-Extracts key information and outputs JSON or human-readable text summary.
+Wraps the pyotdr library to parse OTDR SOR files (Bellcore SR-4731)
+and output key information as JSON or human-readable text summary.
+
+Dependencies:
+    pip install pyotdr
 
 Usage:
     python sor_parser.py <file.sor>              # Text summary
@@ -11,23 +14,27 @@ Usage:
     python sor_parser.py <file.sor> --json --pretty  # Pretty-printed JSON
 """
 
-import struct
 import json
 import sys
-from datetime import datetime, timezone
 from pathlib import Path
+
+try:
+    from pyotdr import sorparse
+except ImportError:
+    print("Error: pyotdr is required. Install with: pip install pyotdr", file=sys.stderr)
+    sys.exit(1)
 
 
 # --- Constants ---
 
 FIBER_TYPES = {
-    651: "G.651 (multimode)",
-    652: "G.652 (standard SM)",
-    653: "G.653 (dispersion-shifted)",
-    654: "G.654 (cut-off shifted)",
-    655: "G.655 (NZ-DSF)",
-    656: "G.656 (wideband NZ-DSF)",
-    657: "G.657 (bend-insensitive)",
+    "651": "G.651 (multimode)",
+    "652": "G.652 (standard SM)",
+    "653": "G.653 (dispersion-shifted)",
+    "654": "G.654 (cut-off shifted)",
+    "655": "G.655 (NZ-DSF)",
+    "656": "G.656 (wideband NZ-DSF)",
+    "657": "G.657 (bend-insensitive)",
 }
 
 BUILD_CONDITIONS = {
@@ -37,506 +44,209 @@ BUILD_CONDITIONS = {
     "OT": "other",
 }
 
-TRACE_TYPES = {
-    "ST": "standard",
-    "RT": "reverse",
-    "DT": "difference",
-    "RF": "reference",
-}
-
-
-# --- Binary Reader ---
-
-class SORReader:
-    """Low-level binary reader with little-endian integer and null-terminated string support."""
-
-    def __init__(self, data: bytes):
-        self.data = data
-        self.pos = 0
-
-    def read_uint16(self) -> int:
-        val = struct.unpack_from("<H", self.data, self.pos)[0]
-        self.pos += 2
-        return val
-
-    def read_uint32(self) -> int:
-        val = struct.unpack_from("<I", self.data, self.pos)[0]
-        self.pos += 4
-        return val
-
-    def read_int16(self) -> int:
-        val = struct.unpack_from("<h", self.data, self.pos)[0]
-        self.pos += 2
-        return val
-
-    def read_int32(self) -> int:
-        val = struct.unpack_from("<i", self.data, self.pos)[0]
-        self.pos += 4
-        return val
-
-    def read_string(self) -> str:
-        try:
-            end = self.data.index(b"\x00", self.pos)
-        except ValueError:
-            end = len(self.data)
-        s = self.data[self.pos:end].decode("latin-1")
-        self.pos = end + 1
-        return s
-
-    def read_bytes(self, n: int) -> bytes:
-        val = self.data[self.pos:self.pos + n]
-        self.pos += n
-        return val
-
-    def seek(self, pos: int):
-        self.pos = pos
-
-    def remaining(self, limit: int) -> int:
-        return limit - self.pos
-
-
-# --- Block Parsers ---
-
-def parse_map(reader: SORReader) -> list:
-    """Parse Map block. Returns list of {name, version, size} dicts for all blocks."""
-    start = reader.pos
-    version = reader.read_uint16()
-    nbytes = reader.read_uint32()
-
-    # v1 has explicit block count; v2 reads until nbytes consumed
-    if version < 200:
-        num_blocks = reader.read_uint16()
-
-    blocks = []
-    while reader.pos < start + nbytes:
-        name = reader.read_string()
-        ver = reader.read_uint16()
-        size = reader.read_uint32()
-        blocks.append({"name": name, "version": ver, "size": size})
-
-    return blocks
-
-
-def parse_gen_params(reader: SORReader, version: int, block_end: int) -> dict:
-    """Parse GenParams block — cable/fiber identification and test setup."""
-    result = {}
-
-    result["language_code"] = reader.read_string()
-    result["cable_id"] = reader.read_string()
-    result["fiber_id"] = reader.read_string()
-
-    fiber_type = reader.read_uint16()
-    result["fiber_type"] = fiber_type
-    result["fiber_type_name"] = FIBER_TYPES.get(fiber_type, f"unknown ({fiber_type})")
-
-    wavelength = reader.read_uint16()
-    result["wavelength_nm"] = wavelength
-
-    result["location_a"] = reader.read_string()
-    result["location_b"] = reader.read_string()
-    result["cable_code"] = reader.read_string()
-
-    build_cond = reader.read_string()
-    result["build_condition"] = build_cond
-    result["build_condition_name"] = BUILD_CONDITIONS.get(build_cond, build_cond)
-
-    # user offset (time) — 100 ps units
-    result["user_offset_100ps"] = reader.read_int32()
-
-    if version >= 200:
-        result["user_offset_distance_01m"] = reader.read_int32()
-
-    result["operator"] = reader.read_string()
-    result["comment"] = reader.read_string()
-
-    return result
-
-
-def parse_fixed_params(reader: SORReader, version: int, block_end: int) -> dict:
-    """Parse FxdParams / FixedParams block — acquisition parameters."""
-    result = {}
-
-    timestamp = reader.read_uint32()
-    result["timestamp"] = timestamp
-    if timestamp > 0:
-        try:
-            result["datetime"] = datetime.fromtimestamp(timestamp, tz=timezone.utc).isoformat()
-        except (OSError, ValueError):
-            result["datetime"] = None
-
-    result["units_of_distance"] = reader.read_string()
-
-    actual_wavelength = reader.read_uint16()
-    result["actual_wavelength_nm"] = actual_wavelength
-
-    result["acquisition_offset_100ps"] = reader.read_int32()
-
-    if version >= 200:
-        result["acquisition_offset_distance_01m"] = reader.read_int32()
-
-    num_pulse_widths = reader.read_uint16()
-    result["num_pulse_widths"] = num_pulse_widths
-
-    pulse_widths = [reader.read_uint16() for _ in range(num_pulse_widths)]
-    result["pulse_widths_ns"] = pulse_widths
-
-    data_spacing = [reader.read_uint32() for _ in range(num_pulse_widths)]
-    result["data_spacing_100ps"] = data_spacing
-
-    num_data_points = [reader.read_uint32() for _ in range(num_pulse_widths)]
-    result["num_data_points"] = num_data_points
-
-    group_index_raw = reader.read_uint32()
-    result["group_index"] = group_index_raw / 100000.0
-
-    backscatter = reader.read_uint16()
-    result["backscatter_coefficient_dB"] = -(backscatter / 10.0)
-
-    result["number_of_averages"] = reader.read_uint32()
-
-    avg_time = reader.read_uint16()
-    result["averaging_time_s"] = avg_time
-
-    range_val = reader.read_uint32()
-    result["range_100ps"] = range_val
-    # Convert range to km: range * 1e-6 (approximately)
-    result["range_km"] = range_val * 1e-6 if range_val else None
-
-    if version >= 200:
-        result["acquisition_range_distance_01m"] = reader.read_int32()
-
-    result["front_panel_offset_100ps"] = reader.read_int32()
-
-    result["noise_floor_level"] = reader.read_uint16()
-    result["noise_floor_scale_factor"] = reader.read_uint16()
-    result["power_offset_first_point"] = reader.read_uint16()
-
-    loss_thr = reader.read_uint16()
-    result["loss_threshold_dB"] = loss_thr / 1000.0
-
-    refl_thr = reader.read_uint16()
-    result["reflectance_threshold_dB"] = -(refl_thr / 1000.0)
-
-    eof_thr = reader.read_uint16()
-    result["end_of_fiber_threshold_dB"] = eof_thr / 1000.0
-
-    # Trace type (2 chars, v2 only)
-    if version >= 200 and reader.pos + 2 <= block_end:
-        trace_type_raw = reader.read_bytes(2).decode("latin-1", errors="replace")
-        result["trace_type"] = trace_type_raw
-        result["trace_type_name"] = TRACE_TYPES.get(trace_type_raw, trace_type_raw)
-
-    return result
-
-
-def parse_sup_params(reader: SORReader, version: int, block_end: int) -> dict:
-    """Parse SupParams block — equipment identification."""
-    result = {}
-    result["supplier_name"] = reader.read_string()
-    result["otdr_mainframe_id"] = reader.read_string()
-    result["otdr_mainframe_sn"] = reader.read_string()
-    result["optical_module_id"] = reader.read_string()
-    result["optical_module_sn"] = reader.read_string()
-    result["software_revision"] = reader.read_string()
-    result["other"] = reader.read_string()
-    return result
-
-
-def parse_key_events(reader: SORReader, version: int, block_end: int, group_index: float) -> dict:
-    """Parse KeyEvents block — splices, connectors, bends, and end-of-fiber."""
-    result = {}
-
-    num_events = reader.read_uint16()
-    result["num_events"] = num_events
-
-    events = []
-    for _ in range(num_events):
-        event = {}
-        event["event_number"] = reader.read_uint16()
-
-        time_of_travel = reader.read_uint32()
-        event["time_of_travel_100ps"] = time_of_travel
-        event["distance_m"] = _time_to_distance(time_of_travel, group_index)
-
-        slope = reader.read_int16()
-        event["slope_dBkm"] = slope / 1000.0
-
-        splice_loss = reader.read_int16()
-        event["splice_loss_dB"] = splice_loss / 1000.0
-
-        reflection = reader.read_int32()
-        event["reflectance_dB"] = reflection / 1000.0
-
-        event_type = reader.read_string()
-        event["event_type"] = event_type
-        event["event_type_description"] = _describe_event_type(event_type)
-
-        if version >= 200:
-            event["end_of_previous_event"] = reader.read_uint32()
-            event["start_of_current_event"] = reader.read_uint32()
-            event["end_of_current_event"] = reader.read_uint32()
-            event["start_of_next_event"] = reader.read_uint32()
-            event["peak_of_current_event"] = reader.read_uint32()
-
-        event["comment"] = reader.read_string()
-        events.append(event)
-
-    result["events"] = events
-
-    # Summary fields after all events
-    if reader.pos + 4 <= block_end:
-        try:
-            total_loss = reader.read_uint32()
-            result["total_loss_dB"] = total_loss / 1000.0
-
-            result["fiber_start_position"] = reader.read_int32()
-
-            fiber_length = reader.read_uint32()
-            result["fiber_length_100ps"] = fiber_length
-            result["fiber_length_m"] = _time_to_distance(fiber_length, group_index)
-
-            if version >= 200 and reader.pos + 4 <= block_end:
-                result["fiber_length_01m"] = reader.read_int32()
-
-            if reader.pos + 2 <= block_end:
-                orl = reader.read_uint16()
-                result["optical_return_loss_dB"] = orl / 1000.0
-        except (struct.error, IndexError):
-            pass
-
-    return result
-
-
-def parse_data_pts_summary(reader: SORReader, version: int, block_end: int) -> dict:
-    """Parse DataPts block — only extract metadata, skip raw trace data."""
-    result = {}
-
-    num_points = reader.read_uint32()
-    result["num_data_points"] = num_points
-
-    num_traces = reader.read_uint16()
-    result["num_traces"] = num_traces
-
-    # Skip actual trace data (can be very large)
-    result["note"] = "Trace data available but not extracted (use --with-trace for full data)"
-    return result
-
-
-# --- Helpers ---
-
-def _time_to_distance(time_100ps: int, group_index: float) -> float:
-    """Convert time-of-travel (100 ps units) to one-way distance in meters."""
-    if group_index <= 0:
-        group_index = 1.46850
-    c = 299792458.0  # speed of light m/s
-    time_s = time_100ps * 1e-10
-    distance = time_s * c / (2.0 * group_index)
-    return round(distance, 3)
-
-
-def _describe_event_type(event_type: str) -> str:
-    """Interpret event type code string. Format varies but common patterns exist."""
-    if not event_type or len(event_type) < 2:
-        return "unknown"
-    descriptions = []
-    # First char: event origination
-    first = event_type[0] if len(event_type) > 0 else ""
-    if first == "0":
-        descriptions.append("non-reflective")
-    elif first == "1":
-        descriptions.append("reflective")
-    elif first == "2":
-        descriptions.append("saturated reflective")
-    # Second char: landmark type
-    second = event_type[1] if len(event_type) > 1 else ""
-    if second == "F":
-        descriptions.append("end-of-fiber")
-    elif second == "A":
-        descriptions.append("added-by-user")
-    elif second == "O":
-        descriptions.append("found-by-OTDR")
-    elif second == "M":
-        descriptions.append("moved-by-user")
-    # Check for launch/tail fiber flags
-    if len(event_type) > 6:
-        if event_type[6] == "L":
-            descriptions.append("launch-fiber")
-        elif event_type[6] == "T":
-            descriptions.append("tail-fiber")
-    return ", ".join(descriptions) if descriptions else event_type
-
-
-# --- Main Parse Function ---
 
 def parse_sor(filepath: str) -> dict:
-    """Parse a SOR file and return structured dict with key information."""
-    data = Path(filepath).read_bytes()
-    reader = SORReader(data)
+    """Parse a SOR file via pyotdr and return a cleaned-up result dict."""
+    status, results, tracedata = sorparse(filepath)
+    if status != "ok":
+        raise RuntimeError(f"pyotdr parse failed: {status}")
 
-    # Step 1: parse map to discover all blocks
-    blocks_info = parse_map(reader)
-
-    # Calculate byte offsets for each block
-    offset = 0
-    for binfo in blocks_info:
-        binfo["offset"] = offset
-        offset += binfo["size"]
-
-    result = {
-        "filename": str(Path(filepath).name),
-        "file_size_bytes": len(data),
-        "blocks_found": [b["name"] for b in blocks_info],
+    output = {
+        "filename": Path(filepath).name,
+        "file_size_bytes": Path(filepath).stat().st_size,
     }
 
-    # Build quick lookup
-    block_map = {}
-    for binfo in blocks_info:
-        block_map[binfo["name"]] = binfo
+    # Block list
+    if "blocks" in results:
+        output["blocks_found"] = list(results["blocks"].keys())
 
-    # Step 2: parse SupParams first (equipment info)
-    if "SupParams" in block_map:
-        binfo = block_map["SupParams"]
-        reader.seek(binfo["offset"])
-        try:
-            result["equipment"] = parse_sup_params(reader, binfo["version"], binfo["offset"] + binfo["size"])
-        except Exception as e:
-            result["equipment"] = {"error": str(e)}
+    # Equipment (SupParams)
+    sup = results.get("SupParams", {})
+    if sup:
+        output["equipment"] = {
+            "supplier": sup.get("supplier", ""),
+            "otdr_model": sup.get("OTDR", ""),
+            "otdr_sn": sup.get("OTDR S/N", ""),
+            "module": sup.get("module", ""),
+            "module_sn": sup.get("module S/N", ""),
+            "software": sup.get("software", ""),
+            "other": sup.get("other", ""),
+        }
 
-    # Step 3: parse GenParams (fiber/cable info)
-    if "GenParams" in block_map:
-        binfo = block_map["GenParams"]
-        reader.seek(binfo["offset"])
-        try:
-            result["general"] = parse_gen_params(reader, binfo["version"], binfo["offset"] + binfo["size"])
-        except Exception as e:
-            result["general"] = {"error": str(e)}
+    # General parameters (GenParams)
+    gen = results.get("GenParams", {})
+    if gen:
+        fiber_type_raw = str(gen.get("fiber type", ""))
+        output["general"] = {
+            "cable_id": gen.get("cable ID", ""),
+            "fiber_id": gen.get("fiber ID", ""),
+            "fiber_type": fiber_type_raw,
+            "fiber_type_name": FIBER_TYPES.get(fiber_type_raw, fiber_type_raw),
+            "wavelength_nm": gen.get("wavelength", ""),
+            "location_a": gen.get("location A", ""),
+            "location_b": gen.get("location B", ""),
+            "cable_code": gen.get("cable code", ""),
+            "build_condition": gen.get("build condition", ""),
+            "build_condition_name": BUILD_CONDITIONS.get(
+                str(gen.get("build condition", "")),
+                str(gen.get("build condition", "")),
+            ),
+            "operator": gen.get("operator", ""),
+            "comment": gen.get("comment", ""),
+        }
 
-    # Step 4: parse FixedParams (acquisition parameters)
-    if "FxdParams" in block_map:
-        binfo = block_map["FxdParams"]
-        reader.seek(binfo["offset"])
-        try:
-            result["acquisition"] = parse_fixed_params(reader, binfo["version"], binfo["offset"] + binfo["size"])
-        except Exception as e:
-            result["acquisition"] = {"error": str(e)}
+    # Fixed/acquisition parameters (FxdParams)
+    fxd = results.get("FxdParams", {})
+    if fxd:
+        output["acquisition"] = {
+            "datetime": fxd.get("date/time", ""),
+            "units": fxd.get("unit", ""),
+            "wavelength_nm": fxd.get("wavelength", ""),
+            "pulse_width_ns": fxd.get("pulse width", []),
+            "sample_spacing": fxd.get("sample spacing", []),
+            "num_data_points": fxd.get("num data points", ""),
+            "group_index": fxd.get("index", ""),
+            "backscatter_dB": fxd.get("BC", ""),
+            "num_averages": fxd.get("num averages", ""),
+            "range_km": fxd.get("range", ""),
+            "loss_threshold_dB": fxd.get("loss thr", ""),
+            "reflectance_threshold_dB": fxd.get("refl thr", ""),
+            "eof_threshold_dB": fxd.get("EOT thr", ""),
+        }
 
-    # Determine group index for distance calculations
-    group_index = 1.46850  # default
-    if "acquisition" in result and isinstance(result["acquisition"], dict):
-        gi = result["acquisition"].get("group_index")
-        if gi and gi > 0:
-            group_index = gi
+    # Key events
+    kevt = results.get("KeyEvents", {})
+    if kevt:
+        num_events = kevt.get("num events", 0)
+        events = []
+        for i in range(1, num_events + 1):
+            evt_key = f"event {i}"
+            evt = kevt.get(evt_key, {})
+            if not evt:
+                continue
+            events.append({
+                "event_number": i,
+                "distance_km": evt.get("distance", ""),
+                "slope_dBkm": evt.get("slope", ""),
+                "splice_loss_dB": evt.get("splice loss", ""),
+                "reflectance_dB": evt.get("refl loss", ""),
+                "event_type": evt.get("type", ""),
+                "comment": evt.get("comment", ""),
+            })
 
-    # Step 5: parse KeyEvents
-    if "KeyEvents" in block_map:
-        binfo = block_map["KeyEvents"]
-        reader.seek(binfo["offset"])
-        try:
-            result["key_events"] = parse_key_events(reader, binfo["version"], binfo["offset"] + binfo["size"], group_index)
-        except Exception as e:
-            result["key_events"] = {"error": str(e)}
+        summary = kevt.get("Summary", {})
+        output["key_events"] = {
+            "num_events": num_events,
+            "events": events,
+            "total_loss_dB": summary.get("total loss", ""),
+            "orl_dB": summary.get("ORL", ""),
+            "loss_start": summary.get("loss start", ""),
+            "loss_finish": summary.get("loss finish", ""),
+        }
 
-    # Step 6: parse DataPts summary (metadata only, skip raw data)
-    if "DataPts" in block_map:
-        binfo = block_map["DataPts"]
-        reader.seek(binfo["offset"])
-        try:
-            result["data_points"] = parse_data_pts_summary(reader, binfo["version"], binfo["offset"] + binfo["size"])
-        except Exception as e:
-            result["data_points"] = {"error": str(e)}
+    # Trace data summary (count only)
+    if tracedata:
+        output["trace_data"] = {
+            "num_points": len(tracedata),
+            "note": "Trace data parsed but not included in output for brevity",
+        }
 
-    return result
+    return output
 
 
 # --- Output Formatting ---
 
 def print_summary(parsed: dict):
-    """Print human-readable summary of parsed SOR file."""
+    """Print human-readable summary."""
     print(f"=== SOR File: {parsed['filename']} ({parsed['file_size_bytes']} bytes) ===")
-    print(f"Blocks: {', '.join(parsed['blocks_found'])}")
+    if "blocks_found" in parsed:
+        print(f"Blocks: {', '.join(parsed['blocks_found'])}")
     print()
 
     # Equipment
     equip = parsed.get("equipment", {})
-    if equip and "error" not in equip:
+    if equip:
         print("--- Equipment ---")
-        _print_field("Supplier", equip.get("supplier_name"))
-        _print_field("OTDR Model", equip.get("otdr_mainframe_id"))
-        _print_field("OTDR S/N", equip.get("otdr_mainframe_sn"))
-        _print_field("Module", equip.get("optical_module_id"))
-        _print_field("Module S/N", equip.get("optical_module_sn"))
-        _print_field("Software", equip.get("software_revision"))
+        _pf("Supplier", equip.get("supplier"))
+        _pf("OTDR Model", equip.get("otdr_model"))
+        _pf("OTDR S/N", equip.get("otdr_sn"))
+        _pf("Module", equip.get("module"))
+        _pf("Module S/N", equip.get("module_sn"))
+        _pf("Software", equip.get("software"))
         print()
 
     # General parameters
     gen = parsed.get("general", {})
-    if gen and "error" not in gen:
+    if gen:
         print("--- General Parameters ---")
-        _print_field("Cable ID", gen.get("cable_id"))
-        _print_field("Fiber ID", gen.get("fiber_id"))
-        _print_field("Fiber Type", gen.get("fiber_type_name"))
-        _print_field("Wavelength", f"{gen['wavelength_nm']} nm" if gen.get("wavelength_nm") else None)
-        _print_field("Location A", gen.get("location_a"))
-        _print_field("Location B", gen.get("location_b"))
-        _print_field("Operator", gen.get("operator"))
-        _print_field("Build Cond.", gen.get("build_condition_name"))
-        _print_field("Comment", gen.get("comment"))
+        _pf("Cable ID", gen.get("cable_id"))
+        _pf("Fiber ID", gen.get("fiber_id"))
+        _pf("Fiber Type", gen.get("fiber_type_name"))
+        _pf("Wavelength", _unit(gen.get("wavelength_nm"), "nm"))
+        _pf("Location A", gen.get("location_a"))
+        _pf("Location B", gen.get("location_b"))
+        _pf("Operator", gen.get("operator"))
+        _pf("Build Cond.", gen.get("build_condition_name"))
+        _pf("Comment", gen.get("comment"))
         print()
 
     # Acquisition parameters
     acq = parsed.get("acquisition", {})
-    if acq and "error" not in acq:
+    if acq:
         print("--- Acquisition Parameters ---")
-        _print_field("Date/Time", acq.get("datetime"))
-        _print_field("Distance Unit", acq.get("units_of_distance"))
-        _print_field("Wavelength", f"{acq['actual_wavelength_nm']} nm" if acq.get("actual_wavelength_nm") else None)
-        _print_field("Pulse Width", f"{acq['pulse_widths_ns']} ns" if acq.get("pulse_widths_ns") else None)
-        _print_field("Group Index", acq.get("group_index"))
-        _print_field("Backscatter", f"{acq['backscatter_coefficient_dB']} dB" if acq.get("backscatter_coefficient_dB") is not None else None)
-        _print_field("Averages", acq.get("number_of_averages"))
-        _print_field("Avg Time", f"{acq['averaging_time_s']} s" if acq.get("averaging_time_s") else None)
-        _print_field("Range", f"{acq['range_km']:.3f} km" if acq.get("range_km") else None)
-        _print_field("Data Points", acq.get("num_data_points"))
-        _print_field("Loss Thresh", f"{acq['loss_threshold_dB']} dB" if acq.get("loss_threshold_dB") is not None else None)
-        _print_field("Refl Thresh", f"{acq['reflectance_threshold_dB']} dB" if acq.get("reflectance_threshold_dB") is not None else None)
-        _print_field("EOF Thresh", f"{acq['end_of_fiber_threshold_dB']} dB" if acq.get("end_of_fiber_threshold_dB") is not None else None)
+        _pf("Date/Time", acq.get("datetime"))
+        _pf("Units", acq.get("units"))
+        _pf("Wavelength", _unit(acq.get("wavelength_nm"), "nm"))
+        _pf("Pulse Width", _unit(acq.get("pulse_width_ns"), "ns"))
+        _pf("Group Index", acq.get("group_index"))
+        _pf("Backscatter", _unit(acq.get("backscatter_dB"), "dB"))
+        _pf("Averages", acq.get("num_averages"))
+        _pf("Range", _unit(acq.get("range_km"), "km"))
+        _pf("Data Points", acq.get("num_data_points"))
+        _pf("Loss Thresh", _unit(acq.get("loss_threshold_dB"), "dB"))
+        _pf("Refl Thresh", _unit(acq.get("reflectance_threshold_dB"), "dB"))
+        _pf("EOF Thresh", _unit(acq.get("eof_threshold_dB"), "dB"))
         print()
 
     # Key events
     kevt = parsed.get("key_events", {})
-    if kevt and "error" not in kevt:
+    if kevt:
         num = kevt.get("num_events", 0)
         print(f"--- Key Events ({num}) ---")
         for evt in kevt.get("events", []):
-            dist = evt.get("distance_m", 0)
-            loss = evt.get("splice_loss_dB", 0)
-            refl = evt.get("reflectance_dB", 0)
-            etype = evt.get("event_type_description", evt.get("event_type", ""))
-            print(f"  #{evt['event_number']:>3d}  {dist:>10.3f} m  "
-                  f"loss={loss:+.3f} dB  refl={refl:+.3f} dB  [{etype}]")
+            dist = evt.get("distance_km", "?")
+            loss = evt.get("splice_loss_dB", "?")
+            refl = evt.get("reflectance_dB", "?")
+            etype = evt.get("event_type", "")
+            print(f"  #{evt['event_number']:>3d}  dist={dist} km  "
+                  f"loss={loss} dB  refl={refl} dB  [{etype}]")
             if evt.get("comment"):
                 print(f"        comment: {evt['comment']}")
-        if kevt.get("total_loss_dB") is not None:
-            print(f"\n  Total Loss:  {kevt['total_loss_dB']:.3f} dB")
-        if kevt.get("optical_return_loss_dB") is not None:
-            print(f"  ORL:         {kevt['optical_return_loss_dB']:.3f} dB")
-        if kevt.get("fiber_length_m") is not None:
-            print(f"  Fiber Length: {kevt['fiber_length_m']:.3f} m")
+        if kevt.get("total_loss_dB"):
+            print(f"\n  Total Loss:  {kevt['total_loss_dB']} dB")
+        if kevt.get("orl_dB"):
+            print(f"  ORL:         {kevt['orl_dB']} dB")
         print()
 
-    # Data points summary
-    dpts = parsed.get("data_points", {})
-    if dpts and "error" not in dpts:
-        print("--- Data Points ---")
-        _print_field("Total Points", dpts.get("num_data_points"))
-        _print_field("Traces", dpts.get("num_traces"))
+    # Trace data
+    td = parsed.get("trace_data", {})
+    if td:
+        print("--- Trace Data ---")
+        _pf("Data Points", td.get("num_points"))
         print()
 
 
-def _print_field(label: str, value):
-    """Print a labeled field, skipping empty values."""
-    if value is not None and value != "":
+def _pf(label: str, value):
+    """Print field if non-empty."""
+    if value is not None and value != "" and value != [] and value != 0:
         print(f"  {label:<15s} {value}")
+
+
+def _unit(value, unit: str):
+    """Format value with unit, return None if empty."""
+    if value is not None and value != "" and value != 0:
+        return f"{value} {unit}"
+    return None
 
 
 # --- CLI ---
@@ -548,6 +258,8 @@ def main():
         print("Options:")
         print("  --json     Output as JSON")
         print("  --pretty   Pretty-print JSON (implies --json)")
+        print()
+        print("Requires: pip install pyotdr")
         sys.exit(1)
 
     filepath = sys.argv[1]

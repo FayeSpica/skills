@@ -5,11 +5,15 @@ description: Parse and analyze OTDR SOR files (Bellcore SR-4731 / Telcordia GR-1
 
 # SOR Parser
 
-Parse OTDR SOR binary files to extract key fiber optic measurement information: equipment, fiber identification, acquisition parameters, and key events (splices, connectors, reflective/non-reflective events).
+Parse OTDR SOR binary files to extract key fiber optic measurement information. Built on top of the [pyotdr](https://pypi.org/project/pyotdr/) library.
+
+## Setup
+
+```bash
+pip install pyotdr
+```
 
 ## Quick Start
-
-Run the bundled parser script on any `.sor` file:
 
 ```bash
 # Human-readable summary
@@ -22,26 +26,21 @@ python scripts/sor_parser.py <file.sor> --json
 python scripts/sor_parser.py <file.sor> --json --pretty
 ```
 
-No external dependencies required — uses only Python standard library (`struct`, `json`, `datetime`).
-
 ## What Gets Extracted
-
-The parser extracts these key fields from the SOR binary:
 
 1. **Equipment** — OTDR supplier, model, serial number, optical module, software version
 2. **General Parameters** — cable/fiber ID, fiber type (G.652 etc.), wavelength, locations A/B, operator, build condition
 3. **Acquisition Parameters** — date/time, pulse width, group index, backscatter coefficient, range, averaging, loss/reflectance/EOF thresholds
-4. **Key Events** — each splice/connector/bend with distance (m), splice loss (dB), reflectance (dB), event type description
+4. **Key Events** — each splice/connector/bend with distance, splice loss (dB), reflectance (dB), event type
 5. **Summary** — total loss, optical return loss (ORL), fiber length
 
-Raw trace data points (DataPts block) are summarized by count only to keep output concise.
+Trace data points are counted but not included in output for brevity.
 
 ## Interpreting Results
 
 - **Splice loss**: typical good fusion splice < 0.1 dB; mechanical splice < 0.5 dB
 - **Reflectance**: connectors typically -35 to -55 dB; fusion splices typically < -60 dB (non-reflective)
 - **Event type codes**: `0`=non-reflective, `1`=reflective, `F`=end-of-fiber, `L`=launch fiber, `T`=tail fiber
-- **Distance**: calculated from time-of-travel using `distance = time × c / (2 × group_index)`
 
 ## Format Details
 
