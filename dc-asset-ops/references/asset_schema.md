@@ -2,7 +2,7 @@
 
 ## 核心实体
 
-### Server（服务器）
+### 服务器
 
 | 字段 | 类型 | 说明 |
 |------|------|------|
@@ -18,10 +18,10 @@
 | gpu_model | string | GPU 型号（可空） |
 | gpu_count | int | GPU 数量 |
 | os | string | 操作系统 |
-| status | enum | 状态：in_use / idle / maintenance / decommissioned / in_stock |
+| status | enum | 状态：使用中 / 空闲 / 维修中 / 已下架 / 库存中 |
 | purpose | string | 用途标签（计算/存储/网络/GPU） |
 
-### Location（位置）
+### 位置
 
 | 字段 | 类型 | 说明 |
 |------|------|------|
@@ -31,7 +31,7 @@
 | u_start | int | 起始 U 位 |
 | u_height | int | 占用 U 数 |
 
-### Lifecycle（生命周期）
+### 生命周期
 
 | 字段 | 类型 | 说明 |
 |------|------|------|
@@ -43,7 +43,7 @@
 | asset_owner | string | 资产责任人 |
 | business_unit | string | 归属业务部门 |
 
-### Network（网络）
+### 网络
 
 | 字段 | 类型 | 说明 |
 |------|------|------|
@@ -56,10 +56,10 @@
 ## 状态流转
 
 ```
-in_stock → in_use → maintenance → in_use
-                  → decommissioned
-         → idle  → in_use
-                 → decommissioned
+库存中 → 使用中 → 维修中 → 使用中
+                → 已下架
+       → 空闲  → 使用中
+               → 已下架
 ```
 
 ## 常用聚合维度

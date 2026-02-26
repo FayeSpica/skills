@@ -80,7 +80,7 @@ python scripts/asset_query.py lifecycle SV-2024-001234
 
 完整字段定义见 [references/asset_schema.md](references/asset_schema.md)，涵盖：
 
-- **Server** — 硬件配置、状态、用途
-- **Location** — 数据中心、机房、机柜、U 位
-- **Lifecycle** — 采购、质保、责任人、部门
-- **Network** — 管理 IP、BMC、业务 IP、交换机端口
+- **服务器** — 硬件配置、状态、用途
+- **位置** — 数据中心、机房、机柜、U 位
+- **生命周期** — 采购、质保、责任人、部门
+- **网络** — 管理 IP、BMC、业务 IP、交换机端口

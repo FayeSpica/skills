@@ -308,20 +308,20 @@ def _print_server_table(servers):
 USAGE = """\
 数据中心服务器资产查询工具
 
-Usage:
-    python asset_query.py inventory [--dc DC] [--status STATUS] [--format json|csv|table]
-    python asset_query.py summary   [--dc DC]
-    python asset_query.py rack      <rack_id>
-    python asset_query.py warranty  [--days N]
-    python asset_query.py search    <keyword>
-    python asset_query.py lifecycle <asset_id>
+用法:
+    python asset_query.py inventory [--dc 数据中心] [--status 状态] [--format json|csv|table]
+    python asset_query.py summary   [--dc 数据中心]
+    python asset_query.py rack      <机柜编号>
+    python asset_query.py warranty  [--days 天数]
+    python asset_query.py search    <关键词>
+    python asset_query.py lifecycle <资产编号>
 
-Commands:
+命令:
     inventory   资产清单查询
     summary     资产统计摘要（按状态/型号/数据中心）
     rack        机柜视图（U 位分布）
     warranty    质保到期预警
-    search      模糊搜索（asset_id / sn / hostname / IP）
+    search      模糊搜索（资产编号 / 序列号 / 主机名 / IP）
     lifecycle   单台设备生命周期
 
 注意: 数据源接口尚未实现，需对接实际 CMDB / 数据库 / API 后使用。
@@ -329,7 +329,7 @@ Commands:
 
 
 def _parse_arg(args, flag, default=None):
-    """Simple arg parser for --flag value."""
+    """简易参数解析，提取 --flag value 格式的参数。"""
     if flag in args:
         idx = args.index(flag)
         if idx + 1 < len(args):
@@ -356,7 +356,7 @@ def main():
             cmd_summary(dc_name=dc)
         elif cmd == "rack":
             if len(args) < 2:
-                print("Error: rack_id required", file=sys.stderr)
+                print("错误: 请提供机柜编号 rack_id", file=sys.stderr)
                 sys.exit(1)
             cmd_rack(args[1])
         elif cmd == "warranty":
@@ -364,16 +364,16 @@ def main():
             cmd_warranty(days=days)
         elif cmd == "search":
             if len(args) < 2:
-                print("Error: keyword required", file=sys.stderr)
+                print("错误: 请提供搜索关键词", file=sys.stderr)
                 sys.exit(1)
             cmd_search(args[1])
         elif cmd == "lifecycle":
             if len(args) < 2:
-                print("Error: asset_id required", file=sys.stderr)
+                print("错误: 请提供资产编号 asset_id", file=sys.stderr)
                 sys.exit(1)
             cmd_lifecycle(args[1])
         else:
-            print(f"Unknown command: {cmd}\n", file=sys.stderr)
+            print(f"未知命令: {cmd}\n", file=sys.stderr)
             print(USAGE)
             sys.exit(1)
     except NotImplementedError as e:
