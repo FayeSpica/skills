@@ -10,4 +10,8 @@
 
 #### Vlog Skill
 
+在你的Agent对话框输入：
+
+```text
 安装 https://github.com/FayeSpica/skills/vlog-skill
+```
