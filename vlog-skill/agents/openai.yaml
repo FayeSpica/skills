@@ -1,0 +1,4 @@
+interface:
+  display_name: "Vlog 剪辑与审美"
+  short_description: "按旅行叙事与音乐节奏剪辑，保留个人审美、真实声音与画质"
+  default_prompt: "用 $vlog-skill 整理这些旅行素材，按我的审美完成选片、配乐卡点、报幕和成片验证。"
