@@ -6,15 +6,10 @@
 
 - [vlog-skill](vlog-skill/SKILL.md)：旅行 Vlog 剪辑、局部改版、声音诊断与封面制作。
 
-## 本地安装
+## 安装
 
-在仓库根目录执行，沿用当前 Codex 的个人技能入口：
+将下面的 `xx` 换成技能名（如 `vlog-skill`），发送给 Agent：
 
-```sh
-mkdir -p "$HOME/.codex/skills"
-ln -s "$PWD/vlog-skill" "$HOME/.codex/skills/vlog-skill"
+```text
+帮我安装 https://github.com/FayeSpica/skills 中的 xx skill。优先复用本地已有仓库，没有则克隆一份。以仓库中的技能目录为唯一维护源，在 ~/.agents/skills/xx 创建软链接，不复制技能文件。若已有同名入口，先核对内容与指向，保留本地修改，确认内容一致后再迁移，最终只保留一个安装入口。完成后验证 SKILL.md 及其引用文件可读，并告知仓库位置和软链接指向。
 ```
-
-若入口已经存在，先检查它的类型和指向，避免覆盖尚未迁入仓库的内容。不要在安装目录另外维护副本，也不要在多个技能扫描目录重复安装同名入口。
-
-[OpenAI 官方说明](https://learn.chatgpt.com/docs/build-skills#where-codex-loads-local-skills)确认 Codex 支持软链接技能目录。新环境采用文档所列的 `~/.agents/skills/` 时，将上面的安装目录替换为该路径即可。
